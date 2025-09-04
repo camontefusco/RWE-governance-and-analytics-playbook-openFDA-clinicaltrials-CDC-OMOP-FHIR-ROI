@@ -3,8 +3,6 @@ A comprehensive playbook combining governance frameworks, analytics methodologie
 
 **Focus:** Enterprise governance, interoperability, and strategic enablement for **Real-World Evidence (RWE)**
 
-![Banner](banner.png)
-
 ---
 
 ## 🌍 Why this matters
