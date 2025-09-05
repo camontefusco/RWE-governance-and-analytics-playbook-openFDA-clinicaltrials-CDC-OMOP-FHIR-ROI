@@ -1,52 +1,79 @@
+"""
+roi.py — Simple ROI model for RWE-enabled programs
+
+Exports:
+- TrialScenario dataclass: inputs for a trial/program scenario
+- roi_summary(ts, months_saved_with_rwe): returns dict with 'savings', 'discounted_benefit', 'ev_uplift', 'total_roi'
+- npv_cashflows(cashflows, annual_rate, freq): generic NPV helper
+"""
+
 from __future__ import annotations
-import math
+
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Iterable, List, Optional
+import math
 
 @dataclass
 class TrialScenario:
+    # Program/Trial characteristics
     baseline_duration_months: float
     patients_treatment: int
     patients_control: int
     cost_per_patient_usd: float
-    prob_reg_accept_rwe: float  # 0..1
-    prob_reg_accept_trad: float  # 0..1
-    discount_rate_annual: float = 0.1  # for time value
-    monthly_benefit_usd: float = 0.0   # value of getting to market earlier per month
 
-def cost(trial: TrialScenario) -> Dict[str, float]:
-    """Compute direct patient costs for traditional vs synthetic/external control."""
-    trad_cost = (trial.patients_treatment + trial.patients_control) * trial.cost_per_patient_usd
-    rwe_cost = (trial.patients_treatment) * trial.cost_per_patient_usd  # assumes external control arm from RWD
-    return {"traditional_cost": trad_cost, "rwe_cost": rwe_cost, "savings": trad_cost - rwe_cost}
+    # Evidence acceptance probabilities
+    prob_reg_accept_rwe: float    # probability that regulator accepts evidence with RWE augmentation
+    prob_reg_accept_trad: float   # baseline probability without RWE
 
-def time_savings(trial: TrialScenario, months_saved_with_rwe: float) -> Dict[str, float]:
-    """Compute time-to-market acceleration and discounted benefit."""
-    dr = trial.discount_rate_annual
-    monthly_rate = (1 + dr) ** (1/12) - 1
-    # Sum of discounted monthly benefits over months saved
-    benefit = 0.0
-    for m in range(1, int(max(0, months_saved_with_rwe)) + 1):
-        benefit += trial.monthly_benefit_usd / ((1 + monthly_rate) ** m)
-    return {"months_saved": months_saved_with_rwe, "discounted_benefit": benefit}
+    # Financials
+    discount_rate_annual: float   # e.g., 0.10 for 10% WACC
+    monthly_benefit_usd: float    # expected monthly net benefit once on market
 
-def value_of_success(trial: TrialScenario) -> Dict[str, float]:
-    """Expected value uplift if RWE increases regulatory/payer acceptance probability."""
-    uplift = max(0.0, trial.prob_reg_accept_rwe - trial.prob_reg_accept_trad)
-    # EV uplift as % * an arbitrary 'launch value' proxy via monthly_benefit over a year (12 months)
-    launch_value_proxy = 12 * trial.monthly_benefit_usd
-    return {"acceptance_uplift": uplift, "ev_uplift": uplift * launch_value_proxy}
+def npv_cashflows(cashflows: Iterable[float], annual_rate: float, freq: int = 12) -> float:
+    """
+    Net present value of a series of cashflows at period t=1..n with rate compounded at `freq` per year.
+    cashflows: list of amounts, one per period (e.g., monthly).
+    """
+    r = max(0.0, float(annual_rate))
+    if r == 0.0:
+        return float(sum(cashflows))
+    pr = r / float(freq)
+    return float(sum(cf / ((1 + pr) ** t) for t, cf in enumerate(cashflows, start=1)))
 
-def roi_summary(trial: TrialScenario, months_saved_with_rwe: float) -> Dict[str, float]:
-    c = cost(trial)
-    t = time_savings(trial, months_saved_with_rwe)
-    v = value_of_success(trial)
-    total_benefit = c["savings"] + t["discounted_benefit"] + v["ev_uplift"]
-    total_investment = 0.1 * c["rwe_cost"]  # placeholder for data acquisition/governance/tooling (10% of RWE cost)
-    roi = (total_benefit - total_investment) / max(1.0, total_investment)
+def roi_summary(ts: TrialScenario, months_saved_with_rwe: int = 6) -> Dict[str, float]:
+    """
+    Compute simple ROI components for using RWE:
+    - Direct Savings: % reduction of per-patient operational cost (proxy for RWE-enabled efficiencies)
+    - Discounted Time Benefit: bringing revenue forward by `months_saved_with_rwe`
+    - EV Uplift: increase in expected value from higher probability of acceptance
+    - Total ROI: sum of the above (illustrative)
+
+    Notes:
+    - This is an executive-friendly, conservative model; calibrate to your portfolio if needed.
+    """
+    # Guards
+    m_saved = max(0, int(months_saved_with_rwe))
+    n_patients = int(ts.patients_treatment + ts.patients_control)
+    cost_pp = float(ts.cost_per_patient_usd)
+
+    # 1) Direct savings (illustrative: 15% cut of patient-related costs)
+    savings = n_patients * cost_pp * 0.15
+
+    # 2) Discounted time benefit (bring forward m_saved months of benefit)
+    # Build a monthly cashflow vector with m_saved periods of benefit
+    monthly = float(ts.monthly_benefit_usd)
+    cash = [monthly] * m_saved
+    time_benefit = npv_cashflows(cashflows=cash, annual_rate=float(ts.discount_rate_annual), freq=12)
+
+    # 3) EV uplift from higher acceptance probability (proxy: $1M per 10% uplift)
+    uplift_prob = max(0.0, float(ts.prob_reg_accept_rwe) - float(ts.prob_reg_accept_trad))
+    ev_uplift = uplift_prob * 10_000_000  # tune to your program scale
+
+    total = float(savings + time_benefit + ev_uplift)
+
     return {
-        **c, **t, **v,
-        "total_benefit": total_benefit,
-        "total_investment": total_investment,
-        "roi_multiple": roi
+        "savings": float(savings),
+        "discounted_benefit": float(time_benefit),
+        "ev_uplift": float(ev_uplift),
+        "total_roi": float(total),
     }
